@@ -51,8 +51,8 @@
             >;
 
             sensor-bindings =
-                <&inc_dec_kp RIGHT_BRACKET LEFT_BRACKET>,
-                <&inc_dec_kp COLON COLON>;
+                <&inc_dec_kp LBKT LEFT_BRACKET>,
+                <&inc_dec_kp APOS SEMI>;
         };
 
         layer_1 {
