@@ -5,12 +5,82 @@ permissions:
 
 jobs:
   build:
+    if: github.ref_name != 'mb1-release-fix'
     uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@main
+
+
+  mb1-release-fix-build:
+    if: github.ref_name == 'mb1-release-fix' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: zmkfirmware/zmk-build-arm:stable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Pin tested ZMK revision only in runner
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("config/west.yml")
+          s = p.read_text()
+          old = "    - name: zmk\n      remote: zmkfirmware\n      revision: main\n"
+          new = "    - name: zmk\n      remote: zmkfirmware\n      revision: 4de313367288aad5aeaa1243890e40dc813f7008\n"
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Fetch dependencies
+        run: |
+          west init -l config
+          west update --fetch-opt=--filter=tree:0
+          west zephyr-export
+      - name: Patch MB1 button release in build workspace
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("zmk/app/src/hid.c")
+          s = p.read_text()
+          anchor = "int zmk_hid_mouse_button_release(zmk_mouse_button_t button) {"
+          start = s.index(anchor)
+          guard = """    if (button >= ZMK_HID_MOUSE_NUM_BUTTONS) {
+                  return -EINVAL;
+              }
+
+          """
+          # Guard indentation is normalized here to match upstream ZMK.
+          guard = "    if (button >= ZMK_HID_MOUSE_NUM_BUTTONS) {\n        return -EINVAL;\n    }\n\n"
+          needle = anchor + "\n" + guard
+          assert s.count(needle) == 1, "Unexpected ZMK hid.c; patch aborted"
+          insert = """    /* MB1-only workaround: discard stuck reference count on release. */
+              if (button == 0) {
+                  LOG_WRN("MB1 release recovery: count %d -> 0", explicit_button_counts[button]);
+                  explicit_button_counts[button] = 0;
+                  WRITE_BIT(explicit_buttons, button, false);
+                  SET_MOUSE_BUTTONS(explicit_buttons);
+                  return 0;
+              }
+
+          """
+          insert = insert.replace("              ", "    ").replace("                  ", "        ")
+          replacement = needle + insert
+          p.write_text(s.replace(needle, replacement, 1))
+          PY
+      - name: Build OLED dongle only
+        run: |
+          west build -s zmk/app -d build -b 'xiao_ble//zmk' -S studio-rpc-usb-uart -- -DZMK_CONFIG="$GITHUB_WORKSPACE/config" '-DSHIELD=mtk64_DONGLE rgbled_adapter dongle_display' -DCONFIG_ZMK_STUDIO=y
+      - name: Prepare firmware
+        run: |
+          mkdir -p firmware
+          cp build/zephyr/zmk.uf2 firmware/mtk64_DONGLE_display_MB1_release_fix.uf2
+      - name: Upload patched OLED firmware without publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: mb1-release-fix-dongle
+          path: firmware/mtk64_DONGLE_display_MB1_release_fix.uf2
 
   publish:
     runs-on: ubuntu-latest
     needs: build
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.ref_name == 'right_left_dongle_rev4' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
